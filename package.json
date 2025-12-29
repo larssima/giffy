@@ -9,14 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.4.0",
     "@ffmpeg/ffmpeg": "^0.12.10",
-    "@ffmpeg/util": "^0.12.1"
+    "@ffmpeg/util": "^0.12.1",
+    "vue": "^3.4.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
-    "typescript": "^5.3.0",
+    "typescript": "^5.9.3",
     "vite": "^5.0.0",
-    "vue-tsc": "^1.8.0"
+    "vue-tsc": "^3.1.5"
   }
 }

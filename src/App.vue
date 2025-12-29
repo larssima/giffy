@@ -46,6 +46,14 @@
             alt="Watermark preview"
           />
         </div>
+        <div v-if="videoWidth && videoHeight" class="video-info">
+          <p><strong>📹 Video Information</strong></p>
+          <p>Dimensions: {{ videoWidth }} × {{ videoHeight }}px</p>
+          <p>Duration: {{ duration.toFixed(2) }}s</p>
+          <p v-if="videoFramerate">Framerate: {{ videoFramerate }}</p>
+          <p>File Size: {{ formatFileSize(videoSize) }}</p>
+          <p v-if="videoFile">Format: {{ videoFile.name.split('.').pop()?.toUpperCase() }}</p>
+        </div>
         <button @click="resetVideo" class="reset-btn">Upload Different Video</button>
       </div>
 
@@ -143,6 +151,18 @@
               <input type="range" v-model.number="watermarkOpacity" min="0.1" max="1" step="0.1" />
               <span class="opacity-value">{{ (watermarkOpacity * 100).toFixed(0) }}%</span>
             </div>
+
+            <div class="control-group">
+              <label>Encoding Speed</label>
+              <select v-model="encodingSpeed">
+                <option value="ultrafast">Fastest (lower quality)</option>
+                <option value="veryfast">Very Fast</option>
+                <option value="fast">Fast (recommended)</option>
+                <option value="medium">Balanced</option>
+                <option value="slow">High Quality (slower)</option>
+              </select>
+              <span class="speed-hint">{{ getSpeedHint() }}</span>
+            </div>
           </div>
         </div>
 
@@ -159,6 +179,15 @@
           {{ isConverting ? 'Converting...' : ffmpegLoaded ? 'Convert to GIF' : 'Loading FFmpeg...' }}
         </button>
 
+        <button 
+          v-if="watermarkFile"
+          @click="saveWithWatermark" 
+          :disabled="isConverting || !ffmpegLoaded"
+          class="convert-btn watermark-save-btn"
+        >
+          {{ isConverting ? 'Processing...' : 'Save Video with Watermark' }}
+        </button>
+
         <div v-if="progress > 0 && progress < 100" class="progress">
           <div class="progress-bar" :style="{ width: progress + '%' }"></div>
           <span>{{ progress }}%</span>
@@ -166,10 +195,18 @@
       </div>
 
       <div v-if="gifUrl" class="preview-section">
-        <h2>Preview</h2>
+        <h2>GIF Preview</h2>
         <img :src="gifUrl" alt="Generated GIF" />
         <a :href="gifUrl" download="output.gif">
           <button>Download GIF</button>
+        </a>
+      </div>
+
+      <div v-if="watermarkedVideoUrl" class="preview-section">
+        <h2>Watermarked Video Preview</h2>
+        <video :src="watermarkedVideoUrl" controls></video>
+        <a :href="watermarkedVideoUrl" download="watermarked_video.mp4">
+          <button>Download Watermarked Video</button>
         </a>
       </div>
     </div>
@@ -177,7 +214,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
 
@@ -191,9 +228,16 @@ const width = ref(480)
 const fps = ref(24)
 const aspectRatio = ref(16/9)
 const gifUrl = ref('')
+const watermarkedVideoUrl = ref('')
 const isConverting = ref(false)
 const progress = ref(0)
 const ffmpegLoaded = ref(false)
+
+// Video info
+const videoWidth = ref(0)
+const videoHeight = ref(0)
+const videoSize = ref(0)
+const videoFramerate = ref('')
 
 // Watermark settings
 const watermarkFile = ref<File | null>(null)
@@ -201,6 +245,7 @@ const watermarkUrl = ref('')
 const watermarkPosition = ref('bottom-right')
 const watermarkOpacity = ref(1)
 const watermarkScale = ref(100)
+const encodingSpeed = ref('fast')
 
 const ffmpeg = new FFmpeg()
 
@@ -229,12 +274,44 @@ async function loadFFmpeg() {
   }
 }
 
-function handleVideoUpload(event: Event) {
+async function handleVideoUpload(event: Event) {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (file) {
     videoFile.value = file
     videoUrl.value = URL.createObjectURL(file)
+    videoSize.value = file.size
+    
+    // Extract framerate using FFmpeg
+    if (ffmpegLoaded.value) {
+      await detectFramerate(file)
+    }
+  }
+}
+
+async function detectFramerate(file: File) {
+  try {
+    const inputName = 'probe_input.mp4'
+    await ffmpeg.writeFile(inputName, await fetchFile(file))
+    
+    let detectedFps = ''
+    
+    ffmpeg.on('log', ({ message }) => {
+      // Look for fps in the log messages
+      const fpsMatch = message.match(/(\d+(?:\.\d+)?)\s*fps/)
+      if (fpsMatch && !detectedFps) {
+        detectedFps = fpsMatch[1]
+      }
+    })
+    
+    // Run ffmpeg to get video info
+    await ffmpeg.exec(['-i', inputName, '-f', 'null', '-'])
+    
+    videoFramerate.value = detectedFps ? `${parseFloat(detectedFps).toFixed(2)} fps` : 'Unknown'
+    
+  } catch (error) {
+    console.error('Failed to detect framerate:', error)
+    videoFramerate.value = 'Unknown'
   }
 }
 
@@ -257,16 +334,38 @@ function onVideoLoaded() {
   if (videoElement.value) {
     duration.value = videoElement.value.duration
     endTime.value = duration.value
+    videoWidth.value = videoElement.value.videoWidth
+    videoHeight.value = videoElement.value.videoHeight
     aspectRatio.value = videoElement.value.videoWidth / videoElement.value.videoHeight
   }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
+}
+
+function getSpeedHint(): string {
+  const hints: Record<string, string> = {
+    'ultrafast': '⚡ Fastest processing, larger file size',
+    'veryfast': '⚡ Very quick, good for previews',
+    'fast': '✓ Good balance of speed and quality',
+    'medium': '⏱️ Slower but better compression',
+    'slow': '🎯 Best quality, takes longer'
+  }
+  return hints[encodingSpeed.value] || ''
 }
 
 function resetVideo() {
   if (videoUrl.value) URL.revokeObjectURL(videoUrl.value)
   if (gifUrl.value) URL.revokeObjectURL(gifUrl.value)
+  if (watermarkedVideoUrl.value) URL.revokeObjectURL(watermarkedVideoUrl.value)
   videoFile.value = null
   videoUrl.value = ''
   gifUrl.value = ''
+  watermarkedVideoUrl.value = ''
   progress.value = 0
 }
 
@@ -345,7 +444,7 @@ async function convertToGif() {
     await ffmpeg.exec(ffmpegArgs)
     
     const data = await ffmpeg.readFile(outputName)
-    const blob = new Blob([data], { type: 'image/gif' })
+    const blob = new Blob([data as BlobPart], { type: 'image/gif' })
     
     if (gifUrl.value) URL.revokeObjectURL(gifUrl.value)
     gifUrl.value = URL.createObjectURL(blob)
@@ -353,6 +452,70 @@ async function convertToGif() {
   } catch (error) {
     console.error('Conversion failed:', error)
     alert('Failed to convert video. Please try again.')
+  } finally {
+    isConverting.value = false
+  }
+}
+
+async function saveWithWatermark() {
+  if (!videoFile.value || !watermarkFile.value || !ffmpegLoaded.value) return
+  
+  isConverting.value = true
+  progress.value = 0
+  
+  try {
+    const inputName = 'input.mp4'
+    const watermarkName = 'watermark.png'
+    const outputName = 'output_watermarked.mp4'
+    
+    await ffmpeg.writeFile(inputName, await fetchFile(videoFile.value))
+    await ffmpeg.writeFile(watermarkName, await fetchFile(watermarkFile.value))
+    
+    ffmpeg.on('progress', ({ progress: p }) => {
+      progress.value = Math.round(p * 100)
+    })
+    
+    const scale = watermarkScale.value / 100
+    const position = getWatermarkOverlayPosition()
+    const alpha = watermarkOpacity.value
+    
+    // Build overlay filter for watermark
+    let videoFilter = ''
+    if (alpha < 1) {
+      videoFilter = `[1:v]scale=iw*${scale}:ih*${scale}:flags=lanczos,format=rgba,colorchannelmixer=aa=${alpha}[wm];[0:v][wm]overlay=${position}`
+    } else {
+      videoFilter = `[1:v]scale=iw*${scale}:ih*${scale}:flags=lanczos[wm];[0:v][wm]overlay=${position}`
+    }
+    
+    console.log('Watermark filter:', videoFilter)
+    
+    await ffmpeg.exec([
+      '-i', inputName,
+      '-i', watermarkName,
+      '-filter_complex', videoFilter,
+      '-c:v', 'libx264',
+      '-preset', encodingSpeed.value,
+      '-crf', '23',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      outputName
+    ])
+    
+    const data = await ffmpeg.readFile(outputName)
+    const blob = new Blob([data as BlobPart], { type: 'video/mp4' })
+    
+    if (watermarkedVideoUrl.value) URL.revokeObjectURL(watermarkedVideoUrl.value)
+    watermarkedVideoUrl.value = URL.createObjectURL(blob)
+    
+    // Auto-download the watermarked video
+    const a = document.createElement('a')
+    a.href = watermarkedVideoUrl.value
+    a.download = 'watermarked_video.mp4'
+    a.click()
+    
+  } catch (error) {
+    console.error('Watermark processing failed:', error)
+    alert('Failed to add watermark to video. Please try again.')
   } finally {
     isConverting.value = false
   }
@@ -481,6 +644,27 @@ h2 {
   transform-origin: center;
 }
 
+.video-info {
+  background: #1a1a1a;
+  border: 1px solid #374151;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 1rem 0;
+  text-align: left;
+}
+
+.video-info p {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+  color: #d1d5db;
+}
+
+.video-info p:first-child {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+  color: #f3f4f6;
+}
+
 .reset-btn {
   background: #374151;
 }
@@ -555,11 +739,20 @@ h2 {
   background: #b91c1c;
 }
 
-.opacity-value {
+.opacity-value,
+.speed-hint {
   display: inline-block;
   margin-left: 0.5rem;
   font-size: 0.875rem;
   color: #9ca3af;
+}
+
+.speed-hint {
+  display: block;
+  margin-left: 0;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #6b7280;
 }
 
 .info {
@@ -608,11 +801,25 @@ h2 {
   margin-top: 2rem;
 }
 
-.preview-section img {
+.preview-section img,
+.preview-section video {
   max-width: 100%;
   border-radius: 0.5rem;
   margin-bottom: 1rem;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.watermark-save-btn {
+  margin-top: 0.5rem;
+  background: #059669;
+}
+
+.watermark-save-btn:hover {
+  background: #047857;
+}
+
+.watermark-save-btn:disabled {
+  background: #374151;
 }
 
 @media (max-width: 768px) {
